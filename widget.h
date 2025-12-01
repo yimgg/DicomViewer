@@ -30,6 +30,9 @@ public:
 
 private slots:
     void onOpenDicom();
+    void onSliderAxialChanged(int value);
+    void onSliderSagittalChanged(int value);
+    void onSliderCoronalChanged(int value);
 
 private:
     using PixelType = short;

@@ -1,8 +1,13 @@
 ﻿#include "widget.h"
 #include "./ui_widget.h"
 
+#if defined(_MSC_VER) && (_MSC_VER >= 1600)
+# pragma execution_character_set("utf-8")
+#endif
+
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QSlider>
 
 #include <cstring>
 
@@ -109,7 +114,7 @@ Widget::~Widget()
 void Widget::onOpenDicom()
 {
     const QString dirPath =
-        QFileDialog::getExistingDirectory(this, tr("选择 DICOM 目录"));
+        QFileDialog::getExistingDirectory(this, QString::fromUtf8("选择 DICOM 目录"));
     if (dirPath.isEmpty()) {
         return;
     }
@@ -125,7 +130,7 @@ void Widget::onOpenDicom()
 
     const auto &seriesUIDs = fileNames->GetSeriesUIDs();
     if (seriesUIDs.empty()) {
-        QMessageBox::warning(this, tr("提示"), tr("未找到 DICOM 序列。"));
+        QMessageBox::warning(this, QString::fromUtf8("提示"), QString::fromUtf8("未找到 DICOM 序列。"));
         return;
     }
 
@@ -135,14 +140,14 @@ void Widget::onOpenDicom()
     try {
         reader->Update();
     } catch (const itk::ExceptionObject &ex) {
-        QMessageBox::critical(this, tr("错误"),
-                              tr("读取失败：%1").arg(ex.what()));
+        QMessageBox::critical(this, QString::fromUtf8("错误"),
+                              QString::fromUtf8("读取失败：%1").arg(QString::fromLocal8Bit(ex.what())));
         return;
     }
 
     vtkSmartPointer<vtkImageData> vtkImage = ItkToVtkImage(reader->GetOutput());
     if (!vtkImage) {
-        QMessageBox::warning(this, tr("提示"), tr("转换图像失败。"));
+        QMessageBox::warning(this, QString::fromUtf8("提示"), QString::fromUtf8("转换图像失败。"));
         return;
     }
 
@@ -197,6 +202,73 @@ void Widget::onOpenDicom()
     m_viewerSagittal->SetInputData(vtkImage);
     m_viewerCoronal->SetInputData(vtkImage);
 
+    // 初始化滑动条范围并连接信号
+    // 获取 QSlider 指针（使用 qobject_cast 确保类型安全）
+    QSlider *sliderAxial = qobject_cast<QSlider*>(ui->slider_axial);
+    QSlider *sliderSagittal = qobject_cast<QSlider*>(ui->slider_sagittal);
+    QSlider *sliderCoronal = qobject_cast<QSlider*>(ui->slider_coronal);
+
+    if (!sliderAxial || !sliderSagittal || !sliderCoronal) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"), QString::fromUtf8("滑动条控件未找到或类型不正确。"));
+        return;
+    }
+
+    // 断开旧连接（如果存在）以防止重复绑定
+    disconnect(sliderAxial, &QSlider::valueChanged, this, nullptr);
+    disconnect(sliderSagittal, &QSlider::valueChanged, this, nullptr);
+    disconnect(sliderCoronal, &QSlider::valueChanged, this, nullptr);
+
+    // 设置轴向滑动条
+    int axialMin = m_viewerAxial->GetSliceMin();
+    int axialMax = m_viewerAxial->GetSliceMax();
+    sliderAxial->setRange(axialMin, axialMax);
+    // 设置滑动条默认值为中值
+    int axialMid = (axialMin + axialMax) / 2;
+    m_viewerAxial->SetSlice(axialMid);
+    sliderAxial->setValue(axialMid);
+    connect(sliderAxial, &QSlider::valueChanged, this, &Widget::onSliderAxialChanged, Qt::UniqueConnection);
+
+    // 设置矢状位滑动条
+    int sagittalMin = m_viewerSagittal->GetSliceMin();
+    int sagittalMax = m_viewerSagittal->GetSliceMax();
+    sliderSagittal->setRange(sagittalMin, sagittalMax);
+    // 设置滑动条默认值为中值
+    int sagittalMid = (sagittalMin + sagittalMax) / 2;
+    m_viewerSagittal->SetSlice(sagittalMid);
+    sliderSagittal->setValue(sagittalMid);
+    connect(sliderSagittal, &QSlider::valueChanged, this, &Widget::onSliderSagittalChanged, Qt::UniqueConnection);
+
+    // 设置冠状位滑动条
+    int coronalMin = m_viewerCoronal->GetSliceMin();
+    int coronalMax = m_viewerCoronal->GetSliceMax();
+    sliderCoronal->setRange(coronalMin, coronalMax);
+    // 设置滑动条默认值为中值
+    int coronalMid = (coronalMin + coronalMax) / 2;
+    m_viewerCoronal->SetSlice(coronalMid);
+    sliderCoronal->setValue(coronalMid);
+    connect(sliderCoronal, &QSlider::valueChanged, this, &Widget::onSliderCoronalChanged, Qt::UniqueConnection);
+
+    // 调整视图窗口以适合主窗口（重置相机并适应窗口大小）
+    // 使用 vtkResliceImageViewer 的 GetRenderer 方法获取渲染器并重置相机
+    if (m_viewerAxial) {
+        vtkRenderer *axialRenderer = m_viewerAxial->GetRenderer();
+        if (axialRenderer) {
+            axialRenderer->ResetCamera();
+        }
+    }
+    if (m_viewerSagittal) {
+        vtkRenderer *sagittalRenderer = m_viewerSagittal->GetRenderer();
+        if (sagittalRenderer) {
+            sagittalRenderer->ResetCamera();
+        }
+    }
+    if (m_viewerCoronal) {
+        vtkRenderer *coronalRenderer = m_viewerCoronal->GetRenderer();
+        if (coronalRenderer) {
+            coronalRenderer->ResetCamera();
+        }
+    }
+
     // 刷新所有窗口
     m_viewerAxial->Render();
     m_viewerSagittal->Render();
@@ -228,4 +300,28 @@ vtkSmartPointer<vtkImageData> Widget::ItkToVtkImage(ImageType *image)
                 pixelCount * sizeof(PixelType));
 
     return vtkImage;
+}
+
+void Widget::onSliderAxialChanged(int value)
+{
+    if (m_viewerAxial) {
+        m_viewerAxial->SetSlice(value);
+        m_viewerAxial->Render();
+    }
+}
+
+void Widget::onSliderSagittalChanged(int value)
+{
+    if (m_viewerSagittal) {
+        m_viewerSagittal->SetSlice(value);
+        m_viewerSagittal->Render();
+    }
+}
+
+void Widget::onSliderCoronalChanged(int value)
+{
+    if (m_viewerCoronal) {
+        m_viewerCoronal->SetSlice(value);
+        m_viewerCoronal->Render();
+    }
 }

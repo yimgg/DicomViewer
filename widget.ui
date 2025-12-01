@@ -17,7 +17,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>20</y>
+     <y>10</y>
      <width>221</width>
      <height>151</height>
     </rect>
@@ -27,7 +27,7 @@
    <property name="geometry">
     <rect>
      <x>250</x>
-     <y>20</y>
+     <y>10</y>
      <width>221</width>
      <height>151</height>
     </rect>
@@ -56,7 +56,7 @@
   <widget class="QPushButton" name="btn_open">
    <property name="geometry">
     <rect>
-     <x>490</x>
+     <x>550</x>
      <y>20</y>
      <width>80</width>
      <height>18</height>
@@ -64,6 +64,84 @@
    </property>
    <property name="text">
     <string>Open DICOM</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="slider_coronal">
+   <property name="geometry">
+    <rect>
+     <x>290</x>
+     <y>160</y>
+     <width>181</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label">
+   <property name="geometry">
+    <rect>
+     <x>250</x>
+     <y>160</y>
+     <width>41</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Coronal</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="slider_sagittal">
+   <property name="geometry">
+    <rect>
+     <x>60</x>
+     <y>330</y>
+     <width>181</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_2">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>330</y>
+     <width>41</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Sagittal</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="slider_axial">
+   <property name="geometry">
+    <rect>
+     <x>290</x>
+     <y>330</y>
+     <width>181</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_3">
+   <property name="geometry">
+    <rect>
+     <x>250</x>
+     <y>330</y>
+     <width>41</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Axial</string>
    </property>
   </widget>
  </widget>

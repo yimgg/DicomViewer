@@ -1,7 +1,7 @@
 # myDicomViewer
 
 一个基于 Qt、VTK 和 ITK 的 DICOM 医学图像查看器。
-
+![alt text](imgs/DicomeViewer.png)
 ## 功能特性
 
 - 支持读取 DICOM 序列
