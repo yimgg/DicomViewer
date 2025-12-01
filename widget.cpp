@@ -8,7 +8,9 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSlider>
+#include <QSignalBlocker>
 
+#include <algorithm>
 #include <cstring>
 
 // VTK 模块初始化（必须在包含其他 VTK 头文件之前）
@@ -20,6 +22,12 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderer.h>
+#include <vtkCommand.h>
+#include <vtkImagePlaneWidget.h>
+#include <vtkOutlineFilter.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkActor.h>
+#include <vtkProperty.h>
 
 #include <itkImageSeriesReader.h>
 #include <itkGDCMImageIO.h>
@@ -40,6 +48,9 @@ Widget::Widget(QWidget *parent)
     , renderer_sagittal(nullptr)
     , renderer_coronal(nullptr)
     , renderer_3d(nullptr)
+    , m_axialObserverTag(0)
+    , m_sagittalObserverTag(0)
+    , m_coronalObserverTag(0)
 {
     ui->setupUi(this);
     connect(ui->btn_open, &QPushButton::clicked, this, &Widget::onOpenDicom);
@@ -169,6 +180,10 @@ void Widget::onOpenDicom()
         m_viewerAxial->SetRenderWindow(axialWindow);
         m_viewerAxial->SetupInteractor(axialWindow->GetInteractor());
         m_viewerAxial->SetSliceOrientationToXY();
+        // 禁用 2D 视图的交互（窗宽/窗位、平移、缩放、拖动等）
+        if (axialWindow->GetInteractor()) {
+            axialWindow->GetInteractor()->Disable();
+        }
     }
 
     // 初始化矢状位视图
@@ -181,6 +196,9 @@ void Widget::onOpenDicom()
         // 设置背景颜色为绿色（与初始化时一致）
         if (renderer_sagittal) {
             renderer_sagittal->SetBackground(0.0, 1.0, 0.0);
+        }
+        if (sagittalWindow->GetInteractor()) {
+            sagittalWindow->GetInteractor()->Disable();
         }
     }
 
@@ -195,6 +213,9 @@ void Widget::onOpenDicom()
         if (renderer_coronal) {
             renderer_coronal->SetBackground(0.0, 0.0, 1.0);
         }
+        if (coronalWindow->GetInteractor()) {
+            coronalWindow->GetInteractor()->Disable();
+        }
     }
 
     // 使用同一个 vtkImageData 对象设置所有视图的输入数据
@@ -202,28 +223,40 @@ void Widget::onOpenDicom()
     m_viewerSagittal->SetInputData(vtkImage);
     m_viewerCoronal->SetInputData(vtkImage);
 
+    // 计算各个方向的中间切片索引
+    const auto region = reader->GetOutput()->GetLargestPossibleRegion();
+    const auto size = region.GetSize();
+    int axialMidIndex     = static_cast<int>(size[2] / 2); // Z 轴
+    int sagittalMidIndex  = static_cast<int>(size[0] / 2); // X 轴
+    int coronalMidIndex   = static_cast<int>(size[1] / 2); // Y 轴
+
     // 初始化滑动条范围并连接信号
     // 获取 QSlider 指针（使用 qobject_cast 确保类型安全）
-    QSlider *sliderAxial = qobject_cast<QSlider*>(ui->slider_axial);
+    QSlider *sliderAxial    = qobject_cast<QSlider*>(ui->slider_axial);
     QSlider *sliderSagittal = qobject_cast<QSlider*>(ui->slider_sagittal);
-    QSlider *sliderCoronal = qobject_cast<QSlider*>(ui->slider_coronal);
+    QSlider *sliderCoronal  = qobject_cast<QSlider*>(ui->slider_coronal);
+    QSlider *sliderWindow   = qobject_cast<QSlider*>(ui->slider_window);
+    QSlider *sliderLevel    = qobject_cast<QSlider*>(ui->slider_level);
 
-    if (!sliderAxial || !sliderSagittal || !sliderCoronal) {
+    if (!sliderAxial || !sliderSagittal || !sliderCoronal ||
+        !sliderWindow || !sliderLevel) {
         QMessageBox::warning(this, QString::fromUtf8("错误"), QString::fromUtf8("滑动条控件未找到或类型不正确。"));
         return;
     }
 
     // 断开旧连接（如果存在）以防止重复绑定
-    disconnect(sliderAxial, &QSlider::valueChanged, this, nullptr);
+    disconnect(sliderAxial,    &QSlider::valueChanged, this, nullptr);
     disconnect(sliderSagittal, &QSlider::valueChanged, this, nullptr);
-    disconnect(sliderCoronal, &QSlider::valueChanged, this, nullptr);
+    disconnect(sliderCoronal,  &QSlider::valueChanged, this, nullptr);
+    disconnect(sliderWindow,   &QSlider::valueChanged, this, nullptr);
+    disconnect(sliderLevel,    &QSlider::valueChanged, this, nullptr);
 
     // 设置轴向滑动条
     int axialMin = m_viewerAxial->GetSliceMin();
     int axialMax = m_viewerAxial->GetSliceMax();
     sliderAxial->setRange(axialMin, axialMax);
-    // 设置滑动条默认值为中值
-    int axialMid = (axialMin + axialMax) / 2;
+    // 设置滑动条默认值为中值（同时用于 3D 平面）
+    int axialMid = std::clamp(axialMidIndex, axialMin, axialMax);
     m_viewerAxial->SetSlice(axialMid);
     sliderAxial->setValue(axialMid);
     connect(sliderAxial, &QSlider::valueChanged, this, &Widget::onSliderAxialChanged, Qt::UniqueConnection);
@@ -232,8 +265,8 @@ void Widget::onOpenDicom()
     int sagittalMin = m_viewerSagittal->GetSliceMin();
     int sagittalMax = m_viewerSagittal->GetSliceMax();
     sliderSagittal->setRange(sagittalMin, sagittalMax);
-    // 设置滑动条默认值为中值
-    int sagittalMid = (sagittalMin + sagittalMax) / 2;
+    // 设置滑动条默认值为中值（同时用于 3D 平面）
+    int sagittalMid = std::clamp(sagittalMidIndex, sagittalMin, sagittalMax);
     m_viewerSagittal->SetSlice(sagittalMid);
     sliderSagittal->setValue(sagittalMid);
     connect(sliderSagittal, &QSlider::valueChanged, this, &Widget::onSliderSagittalChanged, Qt::UniqueConnection);
@@ -242,11 +275,106 @@ void Widget::onOpenDicom()
     int coronalMin = m_viewerCoronal->GetSliceMin();
     int coronalMax = m_viewerCoronal->GetSliceMax();
     sliderCoronal->setRange(coronalMin, coronalMax);
-    // 设置滑动条默认值为中值
-    int coronalMid = (coronalMin + coronalMax) / 2;
+    // 设置滑动条默认值为中值（同时用于 3D 平面）
+    int coronalMid = std::clamp(coronalMidIndex, coronalMin, coronalMax);
     m_viewerCoronal->SetSlice(coronalMid);
     sliderCoronal->setValue(coronalMid);
+
+    // 设置窗宽 / 窗位滑动条的范围和默认值
+    sliderWindow->setRange(1, 3000);
+    sliderWindow->setValue(2000);
+    sliderLevel->setRange(-1000, 1000);
+    sliderLevel->setValue(40);
+
+    // 初始化 3D 视图中的三个切片平面
+    auto interactor3D = view_3d->renderWindow()->GetInteractor();
+    if (interactor3D && renderer_3d) {
+        if (!m_planeAxial) {
+            m_planeAxial = vtkSmartPointer<vtkImagePlaneWidget>::New();
+        }
+        if (!m_planeSagittal) {
+            m_planeSagittal = vtkSmartPointer<vtkImagePlaneWidget>::New();
+        }
+        if (!m_planeCoronal) {
+            m_planeCoronal = vtkSmartPointer<vtkImagePlaneWidget>::New();
+        }
+
+        double window = m_viewerAxial->GetColorWindow();
+        double level  = m_viewerAxial->GetColorLevel();
+
+        // 轴向平面（Z 轴）
+        m_planeAxial->SetInteractor(interactor3D);
+        m_planeAxial->SetInputData(vtkImage);
+        m_planeAxial->SetPlaneOrientationToZAxes();
+        m_planeAxial->SetSliceIndex(axialMid);
+        m_planeAxial->SetWindowLevel(window, level);
+        m_planeAxial->DisplayTextOff();
+        m_planeAxial->SetMarginSizeX(0);
+        m_planeAxial->SetMarginSizeY(0);
+        m_planeAxial->GetPlaneProperty()->SetColor(1.0, 0.0, 0.0); // 红色
+        m_planeAxial->On();
+        m_planeAxial->InteractionOff(); // 只显示，不允许拖动改变切片
+
+        // 矢状位平面（X 轴）
+        m_planeSagittal->SetInteractor(interactor3D);
+        m_planeSagittal->SetInputData(vtkImage);
+        m_planeSagittal->SetPlaneOrientationToXAxes();
+        m_planeSagittal->SetSliceIndex(sagittalMid);
+        m_planeSagittal->SetWindowLevel(window, level);
+        m_planeSagittal->DisplayTextOff();
+        m_planeSagittal->SetMarginSizeX(0);
+        m_planeSagittal->SetMarginSizeY(0);
+        m_planeSagittal->GetPlaneProperty()->SetColor(0.0, 1.0, 0.0); // 绿色
+        m_planeSagittal->On();
+        m_planeSagittal->InteractionOff();
+
+        // 冠状位平面（Y 轴）
+        m_planeCoronal->SetInteractor(interactor3D);
+        m_planeCoronal->SetInputData(vtkImage);
+        m_planeCoronal->SetPlaneOrientationToYAxes();
+        m_planeCoronal->SetSliceIndex(coronalMid);
+        m_planeCoronal->SetWindowLevel(window, level);
+        m_planeCoronal->DisplayTextOff();
+        m_planeCoronal->SetMarginSizeX(0);
+        m_planeCoronal->SetMarginSizeY(0);
+        m_planeCoronal->GetPlaneProperty()->SetColor(0.0, 0.0, 1.0); // 蓝色
+        m_planeCoronal->On();
+        m_planeCoronal->InteractionOff();
+
+        // 创建 / 更新 立方体外框
+        auto outlineFilter = vtkSmartPointer<vtkOutlineFilter>::New();
+        outlineFilter->SetInputData(vtkImage);
+        outlineFilter->Update();
+
+        auto outlineMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+        outlineMapper->SetInputConnection(outlineFilter->GetOutputPort());
+
+        auto outlineActor = vtkSmartPointer<vtkActor>::New();
+        outlineActor->SetMapper(outlineMapper);
+        outlineActor->GetProperty()->SetColor(1.0, 1.0, 1.0); // 白色外框
+
+        // 如果已有外框，先移除
+        if (m_outlineActor) {
+            renderer_3d->RemoveActor(m_outlineActor);
+        }
+        m_outlineActor = outlineActor;
+        renderer_3d->AddActor(m_outlineActor);
+
+        // 重置相机以包含所有对象
+        renderer_3d->ResetCamera();
+        renderWindow_3d->Render();
+    }
     connect(sliderCoronal, &QSlider::valueChanged, this, &Widget::onSliderCoronalChanged, Qt::UniqueConnection);
+    connect(sliderWindow,  &QSlider::valueChanged, this, &Widget::onWindowLevelChanged, Qt::UniqueConnection);
+    connect(sliderLevel,   &QSlider::valueChanged, this, &Widget::onWindowLevelChanged, Qt::UniqueConnection);
+
+    // 应用一次默认窗宽 / 窗位
+    onWindowLevelChanged();
+
+    // 注册 VTK -> Qt 的交互回调，实现滚轮和滑动条同步
+    registerSliceObserver(m_viewerAxial, m_axialSliceCallback, m_axialObserverTag);
+    registerSliceObserver(m_viewerSagittal, m_sagittalSliceCallback, m_sagittalObserverTag);
+    registerSliceObserver(m_viewerCoronal, m_coronalSliceCallback, m_coronalObserverTag);
 
     // 调整视图窗口以适合主窗口（重置相机并适应窗口大小）
     // 使用 vtkResliceImageViewer 的 GetRenderer 方法获取渲染器并重置相机
@@ -308,6 +436,12 @@ void Widget::onSliderAxialChanged(int value)
         m_viewerAxial->SetSlice(value);
         m_viewerAxial->Render();
     }
+    if (m_planeAxial) {
+        m_planeAxial->SetSliceIndex(value);
+    }
+    if (renderWindow_3d) {
+        renderWindow_3d->Render();
+    }
 }
 
 void Widget::onSliderSagittalChanged(int value)
@@ -315,6 +449,12 @@ void Widget::onSliderSagittalChanged(int value)
     if (m_viewerSagittal) {
         m_viewerSagittal->SetSlice(value);
         m_viewerSagittal->Render();
+    }
+    if (m_planeSagittal) {
+        m_planeSagittal->SetSliceIndex(value);
+    }
+    if (renderWindow_3d) {
+        renderWindow_3d->Render();
     }
 }
 
@@ -324,4 +464,114 @@ void Widget::onSliderCoronalChanged(int value)
         m_viewerCoronal->SetSlice(value);
         m_viewerCoronal->Render();
     }
+    if (m_planeCoronal) {
+        m_planeCoronal->SetSliceIndex(value);
+    }
+    if (renderWindow_3d) {
+        renderWindow_3d->Render();
+    }
+}
+
+void Widget::onWindowLevelChanged()
+{
+    QSlider *sliderWindow = qobject_cast<QSlider*>(ui->slider_window);
+    QSlider *sliderLevel  = qobject_cast<QSlider*>(ui->slider_level);
+    if (!sliderWindow || !sliderLevel) {
+        return;
+    }
+
+    const double w = static_cast<double>(sliderWindow->value());
+    const double l = static_cast<double>(sliderLevel->value());
+
+    // 更新 2D 视图窗宽 / 窗位
+    auto applyWL2D = [w, l](vtkResliceImageViewer *viewer) {
+        if (!viewer) return;
+        viewer->SetColorWindow(w);
+        viewer->SetColorLevel(l);
+        viewer->Render();
+    };
+    applyWL2D(m_viewerAxial);
+    applyWL2D(m_viewerSagittal);
+    applyWL2D(m_viewerCoronal);
+
+    // 更新 3D 平面窗宽 / 窗位
+    auto applyWL3D = [w, l](vtkImagePlaneWidget *plane) {
+        if (!plane) return;
+        plane->SetWindowLevel(w, l);
+    };
+    applyWL3D(m_planeAxial);
+    applyWL3D(m_planeSagittal);
+    applyWL3D(m_planeCoronal);
+
+    if (renderWindow_3d) {
+        renderWindow_3d->Render();
+    }
+}
+
+void Widget::registerSliceObserver(vtkResliceImageViewer *viewer,
+                                   vtkSmartPointer<vtkCallbackCommand> &callback,
+                                   unsigned long &observerTag)
+{
+    if (!viewer) {
+        return;
+    }
+
+    if (!callback) {
+        callback = vtkSmartPointer<vtkCallbackCommand>::New();
+        callback->SetCallback(Widget::SliceChangedCallback);
+    }
+
+    callback->SetClientData(this);
+
+    if (observerTag != 0) {
+        viewer->RemoveObserver(observerTag);
+    }
+
+    observerTag = viewer->AddObserver(vtkResliceImageViewer::SliceChangedEvent, callback);
+}
+
+void Widget::handleSliceInteraction(vtkObject *caller)
+{
+    if (!caller) {
+        return;
+    }
+
+    auto *viewerCaller = vtkResliceImageViewer::SafeDownCast(caller);
+    if (!viewerCaller) {
+        return;
+    }
+
+    auto *sliderAxial = qobject_cast<QSlider*>(ui->slider_axial);
+    auto *sliderSagittal = qobject_cast<QSlider*>(ui->slider_sagittal);
+    auto *sliderCoronal = qobject_cast<QSlider*>(ui->slider_coronal);
+
+    if (m_viewerAxial && m_viewerAxial == viewerCaller) {
+        syncSliderWithViewer(sliderAxial, m_viewerAxial);
+    } else if (m_viewerSagittal && m_viewerSagittal == viewerCaller) {
+        syncSliderWithViewer(sliderSagittal, m_viewerSagittal);
+    } else if (m_viewerCoronal && m_viewerCoronal == viewerCaller) {
+        syncSliderWithViewer(sliderCoronal, m_viewerCoronal);
+    }
+}
+
+void Widget::syncSliderWithViewer(QSlider *slider, vtkResliceImageViewer *viewer)
+{
+    if (!slider || !viewer) {
+        return;
+    }
+
+    QSignalBlocker blocker(slider);
+    slider->setValue(viewer->GetSlice());
+}
+
+void Widget::SliceChangedCallback(vtkObject* caller,
+                                  unsigned long /*eventId*/,
+                                  void* clientData,
+                                  void* /*callData*/)
+{
+    auto *self = static_cast<Widget*>(clientData);
+    if (!self) {
+        return;
+    }
+    self->handleSliceInteraction(caller);
 }

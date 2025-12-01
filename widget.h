@@ -6,6 +6,7 @@
 #include <vtkSmartPointer.h>
 #include <vtkResliceImageViewer.h>
 #include <vtkImageData.h>
+#include <vtkCallbackCommand.h>
 
 #include <itkImage.h>
 
@@ -19,6 +20,11 @@ QT_END_NAMESPACE
 class QVTKOpenGLNativeWidget;
 class vtkGenericOpenGLRenderWindow;
 class vtkRenderer;
+class vtkObject;
+class vtkImagePlaneWidget;
+class vtkActor;
+
+class QSlider;
 
 class Widget : public QWidget
 {
@@ -33,6 +39,7 @@ private slots:
     void onSliderAxialChanged(int value);
     void onSliderSagittalChanged(int value);
     void onSliderCoronalChanged(int value);
+    void onWindowLevelChanged();
 
 private:
     using PixelType = short;
@@ -40,6 +47,15 @@ private:
     using ImageType = itk::Image<PixelType, Dimension>;
 
     vtkSmartPointer<vtkImageData> ItkToVtkImage(ImageType *image);
+    void registerSliceObserver(vtkResliceImageViewer *viewer,
+                               vtkSmartPointer<vtkCallbackCommand> &callback,
+                               unsigned long &observerTag);
+    void handleSliceInteraction(vtkObject *caller);
+    void syncSliderWithViewer(QSlider *slider, vtkResliceImageViewer *viewer);
+    static void SliceChangedCallback(vtkObject* caller,
+                                     unsigned long eventId,
+                                     void* clientData,
+                                     void* callData);
 
     Ui::Widget *ui;
     
@@ -64,5 +80,21 @@ private:
     vtkSmartPointer<vtkResliceImageViewer> m_viewerAxial;
     vtkSmartPointer<vtkResliceImageViewer> m_viewerSagittal;
     vtkSmartPointer<vtkResliceImageViewer> m_viewerCoronal;
+
+    // 3D 视图中的三个切片平面
+    vtkSmartPointer<vtkImagePlaneWidget> m_planeAxial;
+    vtkSmartPointer<vtkImagePlaneWidget> m_planeSagittal;
+    vtkSmartPointer<vtkImagePlaneWidget> m_planeCoronal;
+
+    // 3D 视图中的立方体外框
+    vtkSmartPointer<vtkActor> m_outlineActor;
+
+    vtkSmartPointer<vtkCallbackCommand> m_axialSliceCallback;
+    vtkSmartPointer<vtkCallbackCommand> m_sagittalSliceCallback;
+    vtkSmartPointer<vtkCallbackCommand> m_coronalSliceCallback;
+
+    unsigned long m_axialObserverTag;
+    unsigned long m_sagittalObserverTag;
+    unsigned long m_coronalObserverTag;
 };
 #endif // WIDGET_H
