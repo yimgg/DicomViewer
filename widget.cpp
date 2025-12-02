@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 
 // VTK 模块初始化（必须在包含其他 VTK 头文件之前）
 #include <vtkAutoInit.h>
@@ -28,10 +29,16 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 #include <vtkPolyDataMapper.h>
 #include <vtkActor.h>
 #include <vtkProperty.h>
+#include <vtkCornerAnnotation.h>
+#include <vtkTextProperty.h>
+#include <vtkCellPicker.h>
+#include <vtkInteractorStyleImage.h>
+#include <vtkRenderWindowInteractor.h>
 
 #include <itkImageSeriesReader.h>
 #include <itkGDCMImageIO.h>
 #include <itkGDCMSeriesFileNames.h>
+#include <itkMetaDataObject.h>
 
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
@@ -51,6 +58,11 @@ Widget::Widget(QWidget *parent)
     , m_axialObserverTag(0)
     , m_sagittalObserverTag(0)
     , m_coronalObserverTag(0)
+    , m_axialClickTag(0)
+    , m_sagittalClickTag(0)
+    , m_coronalClickTag(0)
+    , m_patientName("N/A")
+    , m_patientID("N/A")
 {
     ui->setupUi(this);
     connect(ui->btn_open, &QPushButton::clicked, this, &Widget::onOpenDicom);
@@ -156,6 +168,25 @@ void Widget::onOpenDicom()
         return;
     }
 
+    // 读取 DICOM 元数据（患者姓名 / ID）
+    m_patientName = "N/A";
+    m_patientID   = "N/A";
+    try {
+        const auto &dictArray = *(reader->GetMetaDataDictionaryArray());
+        if (!dictArray.empty() && dictArray[0]) {
+            const auto &dict = *dictArray[0];
+            m_patientName = GetDicomValue(dict, "0010|0010");
+            m_patientID   = GetDicomValue(dict, "0010|0020");
+        } else {
+            // 回退到 GDCM ImageIO 的字典
+            const auto &dict = gdcmIO->GetMetaDataDictionary();
+            m_patientName = GetDicomValue(dict, "0010|0010");
+            m_patientID   = GetDicomValue(dict, "0010|0020");
+        }
+    } catch (...) {
+        // 保持默认值 "N/A"
+    }
+
     vtkSmartPointer<vtkImageData> vtkImage = ItkToVtkImage(reader->GetOutput());
     if (!vtkImage) {
         QMessageBox::warning(this, QString::fromUtf8("提示"), QString::fromUtf8("转换图像失败。"));
@@ -180,10 +211,6 @@ void Widget::onOpenDicom()
         m_viewerAxial->SetRenderWindow(axialWindow);
         m_viewerAxial->SetupInteractor(axialWindow->GetInteractor());
         m_viewerAxial->SetSliceOrientationToXY();
-        // 禁用 2D 视图的交互（窗宽/窗位、平移、缩放、拖动等）
-        if (axialWindow->GetInteractor()) {
-            axialWindow->GetInteractor()->Disable();
-        }
     }
 
     // 初始化矢状位视图
@@ -196,9 +223,6 @@ void Widget::onOpenDicom()
         // 设置背景颜色为绿色（与初始化时一致）
         if (renderer_sagittal) {
             renderer_sagittal->SetBackground(0.0, 1.0, 0.0);
-        }
-        if (sagittalWindow->GetInteractor()) {
-            sagittalWindow->GetInteractor()->Disable();
         }
     }
 
@@ -213,15 +237,32 @@ void Widget::onOpenDicom()
         if (renderer_coronal) {
             renderer_coronal->SetBackground(0.0, 0.0, 1.0);
         }
-        if (coronalWindow->GetInteractor()) {
-            coronalWindow->GetInteractor()->Disable();
-        }
     }
 
     // 使用同一个 vtkImageData 对象设置所有视图的输入数据
     m_viewerAxial->SetInputData(vtkImage);
     m_viewerSagittal->SetInputData(vtkImage);
     m_viewerCoronal->SetInputData(vtkImage);
+
+    // 初始化 / 添加 2D 视图角标
+    if (!m_annotAxial) {
+        m_annotAxial = vtkSmartPointer<vtkCornerAnnotation>::New();
+        m_annotAxial->GetTextProperty()->SetColor(1.0, 1.0, 0.0); // 黄色
+        m_annotAxial->SetMaximumFontSize(14);
+        m_viewerAxial->GetRenderer()->AddViewProp(m_annotAxial);
+    }
+    if (!m_annotSagittal) {
+        m_annotSagittal = vtkSmartPointer<vtkCornerAnnotation>::New();
+        m_annotSagittal->GetTextProperty()->SetColor(1.0, 1.0, 0.0);
+        m_annotSagittal->SetMaximumFontSize(14);
+        m_viewerSagittal->GetRenderer()->AddViewProp(m_annotSagittal);
+    }
+    if (!m_annotCoronal) {
+        m_annotCoronal = vtkSmartPointer<vtkCornerAnnotation>::New();
+        m_annotCoronal->GetTextProperty()->SetColor(1.0, 1.0, 0.0);
+        m_annotCoronal->SetMaximumFontSize(14);
+        m_viewerCoronal->GetRenderer()->AddViewProp(m_annotCoronal);
+    }
 
     // 计算各个方向的中间切片索引
     const auto region = reader->GetOutput()->GetLargestPossibleRegion();
@@ -370,11 +411,35 @@ void Widget::onOpenDicom()
 
     // 应用一次默认窗宽 / 窗位
     onWindowLevelChanged();
+    UpdateAnnotations();
 
     // 注册 VTK -> Qt 的交互回调，实现滚轮和滑动条同步
     registerSliceObserver(m_viewerAxial, m_axialSliceCallback, m_axialObserverTag);
     registerSliceObserver(m_viewerSagittal, m_sagittalSliceCallback, m_sagittalObserverTag);
     registerSliceObserver(m_viewerCoronal, m_coronalSliceCallback, m_coronalObserverTag);
+
+    // 注册鼠标点击回调，实现三视图光标联动
+    auto registerClick = [&](vtkResliceImageViewer *viewer,
+                             vtkSmartPointer<vtkCallbackCommand> &callback,
+                             unsigned long &tag) {
+        if (!viewer) return;
+        auto *style = vtkInteractorStyleImage::SafeDownCast(viewer->GetInteractorStyle());
+        if (!style) return;
+
+        if (!callback) {
+            callback = vtkSmartPointer<vtkCallbackCommand>::New();
+            callback->SetCallback(Widget::OnClickCallback);
+        }
+        callback->SetClientData(this);
+
+        if (tag != 0) {
+            style->RemoveObserver(tag);
+        }
+        tag = style->AddObserver(vtkCommand::LeftButtonPressEvent, callback);
+    };
+    registerClick(m_viewerAxial,    m_axialClickCallback,    m_axialClickTag);
+    registerClick(m_viewerSagittal, m_sagittalClickCallback, m_sagittalClickTag);
+    registerClick(m_viewerCoronal,  m_coronalClickCallback,  m_coronalClickTag);
 
     // 调整视图窗口以适合主窗口（重置相机并适应窗口大小）
     // 使用 vtkResliceImageViewer 的 GetRenderer 方法获取渲染器并重置相机
@@ -430,6 +495,25 @@ vtkSmartPointer<vtkImageData> Widget::ItkToVtkImage(ImageType *image)
     return vtkImage;
 }
 
+std::string Widget::GetDicomValue(const itk::MetaDataDictionary &dict,
+                                  const std::string &tagKey) const
+{
+    using MetaStringType = itk::MetaDataObject<std::string>;
+    auto it = dict.Find(tagKey);
+    if (it == dict.End()) {
+        return "N/A";
+    }
+    const auto *metaObj = dynamic_cast<const MetaStringType*>(it->second.GetPointer());
+    if (!metaObj) {
+        return "N/A";
+    }
+    const std::string &value = metaObj->GetMetaDataObjectValue();
+    if (value.empty()) {
+        return "N/A";
+    }
+    return value;
+}
+
 void Widget::onSliderAxialChanged(int value)
 {
     if (m_viewerAxial) {
@@ -442,6 +526,7 @@ void Widget::onSliderAxialChanged(int value)
     if (renderWindow_3d) {
         renderWindow_3d->Render();
     }
+    UpdateAnnotations();
 }
 
 void Widget::onSliderSagittalChanged(int value)
@@ -456,6 +541,7 @@ void Widget::onSliderSagittalChanged(int value)
     if (renderWindow_3d) {
         renderWindow_3d->Render();
     }
+    UpdateAnnotations();
 }
 
 void Widget::onSliderCoronalChanged(int value)
@@ -470,6 +556,7 @@ void Widget::onSliderCoronalChanged(int value)
     if (renderWindow_3d) {
         renderWindow_3d->Render();
     }
+    UpdateAnnotations();
 }
 
 void Widget::onWindowLevelChanged()
@@ -506,6 +593,7 @@ void Widget::onWindowLevelChanged()
     if (renderWindow_3d) {
         renderWindow_3d->Render();
     }
+    UpdateAnnotations();
 }
 
 void Widget::registerSliceObserver(vtkResliceImageViewer *viewer,
@@ -552,6 +640,7 @@ void Widget::handleSliceInteraction(vtkObject *caller)
     } else if (m_viewerCoronal && m_viewerCoronal == viewerCaller) {
         syncSliderWithViewer(sliderCoronal, m_viewerCoronal);
     }
+    UpdateAnnotations();
 }
 
 void Widget::syncSliderWithViewer(QSlider *slider, vtkResliceImageViewer *viewer)
@@ -574,4 +663,161 @@ void Widget::SliceChangedCallback(vtkObject* caller,
         return;
     }
     self->handleSliceInteraction(caller);
+}
+
+void Widget::UpdateAnnotations()
+{
+    if (!m_viewerAxial || !m_viewerSagittal || !m_viewerCoronal) {
+        return;
+    }
+
+    auto updateForViewer = [this](vtkResliceImageViewer *viewer,
+                                  vtkCornerAnnotation *annot,
+                                  const char *orientationLabel) {
+        if (!viewer || !annot) return;
+
+        int sliceMin = viewer->GetSliceMin();
+        int sliceMax = viewer->GetSliceMax();
+        int totalSlices = sliceMax - sliceMin + 1;
+        if (totalSlices < 1) totalSlices = 1;
+
+        int slice = viewer->GetSlice() - sliceMin + 1; // 1-based
+        if (slice < 1) slice = 1;
+        if (slice > totalSlices) slice = totalSlices;
+
+        // 左上角：患者信息 + 方向
+        std::string topLeft = "Name: " + m_patientName +
+                              "\nID: " + m_patientID +
+                              "\nView: " + (orientationLabel ? orientationLabel : "");
+        annot->SetText(0, topLeft.c_str());
+
+        // 左下角：切片信息
+        std::string bottomLeft = "Slice: " + std::to_string(slice) +
+                                 " / " + std::to_string(totalSlices);
+        annot->SetText(1, bottomLeft.c_str());
+
+        // 右下角：窗宽 / 窗位
+        double w = viewer->GetColorWindow();
+        double l = viewer->GetColorLevel();
+        std::string bottomRight = "W: " + std::to_string(static_cast<int>(w)) +
+                                  "  L: " + std::to_string(static_cast<int>(l));
+        annot->SetText(2, bottomRight.c_str());
+    };
+
+    updateForViewer(m_viewerAxial,    m_annotAxial,    "Axial");
+    updateForViewer(m_viewerSagittal, m_annotSagittal, "Sagittal");
+    updateForViewer(m_viewerCoronal,  m_annotCoronal,  "Coronal");
+
+    m_viewerAxial->Render();
+    m_viewerSagittal->Render();
+    m_viewerCoronal->Render();
+}
+
+void Widget::OnClickCallback(vtkObject* caller,
+                             unsigned long /*eventId*/,
+                             void* clientData,
+                             void* /*callData*/)
+{
+    auto *self = static_cast<Widget*>(clientData);
+    if (!self) {
+        return;
+    }
+
+    auto *style = vtkInteractorStyleImage::SafeDownCast(caller);
+    if (!style) {
+        return;
+    }
+
+    vtkRenderWindowInteractor *interactor = style->GetInteractor();
+    if (!interactor) {
+        return;
+    }
+
+    vtkResliceImageViewer *sourceViewer = nullptr;
+    if (self->m_viewerAxial && self->m_viewerAxial->GetInteractorStyle() == style) {
+        sourceViewer = self->m_viewerAxial;
+    } else if (self->m_viewerSagittal && self->m_viewerSagittal->GetInteractorStyle() == style) {
+        sourceViewer = self->m_viewerSagittal;
+    } else if (self->m_viewerCoronal && self->m_viewerCoronal->GetInteractorStyle() == style) {
+        sourceViewer = self->m_viewerCoronal;
+    }
+
+    if (!sourceViewer) {
+        return;
+    }
+
+    vtkRenderer *renderer = sourceViewer->GetRenderer();
+    if (!renderer) {
+        return;
+    }
+
+    self->HandleViewClick(sourceViewer, interactor, renderer);
+}
+
+void Widget::HandleViewClick(vtkResliceImageViewer *viewer,
+                             vtkRenderWindowInteractor *interactor,
+                             vtkRenderer *renderer)
+{
+    if (!viewer || !interactor || !renderer) {
+        return;
+    }
+
+    vtkSmartPointer<vtkCellPicker> picker = vtkSmartPointer<vtkCellPicker>::New();
+    picker->SetTolerance(0.005); // 小的世界坐标容差
+
+    int pos[2];
+    interactor->GetEventPosition(pos);
+
+    if (!picker->Pick(pos[0], pos[1], 0, renderer)) {
+        return;
+    }
+
+    double pickPos[3];
+    picker->GetPickPosition(pickPos);
+
+    vtkImageData *imageData = viewer->GetInput();
+    if (!imageData) {
+        return;
+    }
+
+    double origin[3];
+    double spacing[3];
+    imageData->GetOrigin(origin);
+    imageData->GetSpacing(spacing);
+
+    auto worldToIndex = [&](double worldCoord, double org, double spc) -> int {
+        return static_cast<int>(std::round((worldCoord - org) / spc));
+    };
+
+    int idxX = worldToIndex(pickPos[0], origin[0], spacing[0]);
+    int idxY = worldToIndex(pickPos[1], origin[1], spacing[1]);
+    int idxZ = worldToIndex(pickPos[2], origin[2], spacing[2]);
+
+    auto clampIndex = [](int idx, int minVal, int maxVal) -> int {
+        if (idx < minVal) return minVal;
+        if (idx > maxVal) return maxVal;
+        return idx;
+    };
+
+    int axialMin = m_viewerAxial ? m_viewerAxial->GetSliceMin() : 0;
+    int axialMax = m_viewerAxial ? m_viewerAxial->GetSliceMax() : 0;
+    idxZ = clampIndex(idxZ, axialMin, axialMax);
+
+    int sagittalMin = m_viewerSagittal ? m_viewerSagittal->GetSliceMin() : 0;
+    int sagittalMax = m_viewerSagittal ? m_viewerSagittal->GetSliceMax() : 0;
+    idxX = clampIndex(idxX, sagittalMin, sagittalMax);
+
+    int coronalMin = m_viewerCoronal ? m_viewerCoronal->GetSliceMin() : 0;
+    int coronalMax = m_viewerCoronal ? m_viewerCoronal->GetSliceMax() : 0;
+    idxY = clampIndex(idxY, coronalMin, coronalMax);
+
+    if (auto slider = qobject_cast<QSlider*>(ui->slider_axial)) {
+        slider->setValue(idxZ);
+    }
+    if (auto slider = qobject_cast<QSlider*>(ui->slider_sagittal)) {
+        slider->setValue(idxX);
+    }
+    if (auto slider = qobject_cast<QSlider*>(ui->slider_coronal)) {
+        slider->setValue(idxY);
+    }
 }

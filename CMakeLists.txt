@@ -28,6 +28,7 @@ find_package(VTK 9.2 REQUIRED COMPONENTS
     RenderingFreeType
     RenderingGL2PSOpenGL2
     FiltersModeling
+    RenderingAnnotation
 )
 if(VTK_FOUND)
     message(STATUS "VTK version: ${VTK_VERSION}")
@@ -86,6 +87,7 @@ target_link_libraries(myDicomViewer PRIVATE
     VTK::RenderingFreeType
     VTK::RenderingGL2PSOpenGL2
     VTK::FiltersModeling
+    VTK::RenderingAnnotation
     ${ITK_LIBRARIES}
 )
 
@@ -120,28 +122,3 @@ install(TARGETS myDicomViewer
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(myDicomViewer)
 endif()
-
-
-
-
-include(GNUInstallDirs)
-
-install(TARGETS myDicomViewer
-
-    BUNDLE DESTINATION .
-
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-
-)
-
-
-
-if(QT_VERSION_MAJOR EQUAL 6)
-
-    qt_finalize_executable(myDicomViewer)
-
-endif()
-
-

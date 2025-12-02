@@ -7,8 +7,13 @@
 #include <vtkResliceImageViewer.h>
 #include <vtkImageData.h>
 #include <vtkCallbackCommand.h>
+#include <vtkCornerAnnotation.h>
+#include <vtkCellPicker.h>
 
 #include <itkImage.h>
+#include <itkMetaDataObject.h>
+
+#include <string>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -47,6 +52,8 @@ private:
     using ImageType = itk::Image<PixelType, Dimension>;
 
     vtkSmartPointer<vtkImageData> ItkToVtkImage(ImageType *image);
+    std::string GetDicomValue(const itk::MetaDataDictionary &dict,
+                              const std::string &tagKey) const;
     void registerSliceObserver(vtkResliceImageViewer *viewer,
                                vtkSmartPointer<vtkCallbackCommand> &callback,
                                unsigned long &observerTag);
@@ -81,6 +88,11 @@ private:
     vtkSmartPointer<vtkResliceImageViewer> m_viewerSagittal;
     vtkSmartPointer<vtkResliceImageViewer> m_viewerCoronal;
 
+    // 2D 视图角标
+    vtkSmartPointer<vtkCornerAnnotation> m_annotAxial;
+    vtkSmartPointer<vtkCornerAnnotation> m_annotSagittal;
+    vtkSmartPointer<vtkCornerAnnotation> m_annotCoronal;
+
     // 3D 视图中的三个切片平面
     vtkSmartPointer<vtkImagePlaneWidget> m_planeAxial;
     vtkSmartPointer<vtkImagePlaneWidget> m_planeSagittal;
@@ -92,9 +104,28 @@ private:
     vtkSmartPointer<vtkCallbackCommand> m_axialSliceCallback;
     vtkSmartPointer<vtkCallbackCommand> m_sagittalSliceCallback;
     vtkSmartPointer<vtkCallbackCommand> m_coronalSliceCallback;
+    vtkSmartPointer<vtkCallbackCommand> m_axialClickCallback;
+    vtkSmartPointer<vtkCallbackCommand> m_sagittalClickCallback;
+    vtkSmartPointer<vtkCallbackCommand> m_coronalClickCallback;
 
     unsigned long m_axialObserverTag;
     unsigned long m_sagittalObserverTag;
     unsigned long m_coronalObserverTag;
+    unsigned long m_axialClickTag;
+    unsigned long m_sagittalClickTag;
+    unsigned long m_coronalClickTag;
+
+    // DICOM 元数据缓存
+    std::string m_patientName;
+    std::string m_patientID;
+
+    void UpdateAnnotations();
+    static void OnClickCallback(vtkObject* caller,
+                                unsigned long eventId,
+                                void* clientData,
+                                void* callData);
+    void HandleViewClick(vtkResliceImageViewer *viewer,
+                         vtkRenderWindowInteractor *interactor,
+                         vtkRenderer *renderer);
 };
 #endif // WIDGET_H
