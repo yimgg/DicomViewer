@@ -9,6 +9,9 @@
 #include <QMessageBox>
 #include <QSlider>
 #include <QSignalBlocker>
+#include <QTextCodec>
+#include <QFile>
+#include <QStringList>
 
 #include <algorithm>
 #include <cstring>
@@ -34,6 +37,9 @@ VTK_MODULE_INIT(vtkRenderingFreeType);
 #include <vtkCellPicker.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkDistanceWidget.h>
+#include <vtkDistanceRepresentation2D.h>
+#include <vtkProperty2D.h>
 
 #include <itkImageSeriesReader.h>
 #include <itkGDCMImageIO.h>
@@ -66,6 +72,7 @@ Widget::Widget(QWidget *parent)
 {
     ui->setupUi(this);
     connect(ui->btn_open, &QPushButton::clicked, this, &Widget::onOpenDicom);
+    connect(ui->btn_measure, &QPushButton::toggled, this, &Widget::onMeasureToggled);
     
     // 获取 UI 中的 QVTKOpenGLNativeWidget
     view_axial = ui->view_axial;
@@ -193,6 +200,20 @@ void Widget::onOpenDicom()
         return;
     }
 
+    // 健壮性处理：先关闭所有测量工具，防止与旧的 Interactor 冲突
+    if (m_distWidgetAxial) {
+        m_distWidgetAxial->Off();
+        m_distWidgetAxial->SetInteractor(nullptr);
+    }
+    if (m_distWidgetSagittal) {
+        m_distWidgetSagittal->Off();
+        m_distWidgetSagittal->SetInteractor(nullptr);
+    }
+    if (m_distWidgetCoronal) {
+        m_distWidgetCoronal->Off();
+        m_distWidgetCoronal->SetInteractor(nullptr);
+    }
+
     // 健壮性处理：如果已经存在 viewer，先重置输入数据
     if (m_viewerAxial) {
         m_viewerAxial->SetInputData(nullptr);
@@ -245,22 +266,52 @@ void Widget::onOpenDicom()
     m_viewerCoronal->SetInputData(vtkImage);
 
     // 初始化 / 添加 2D 视图角标
+    // 查找支持中文的系统字体文件（Windows）
+    QString chineseFontPath;
+    QStringList fontPaths = {
+        "C:/Windows/Fonts/msyh.ttf",      // 微软雅黑
+        "C:/Windows/Fonts/simhei.ttf",    // 黑体
+        "C:/Windows/Fonts/simsun.ttc",    // 宋体
+        "C:/Windows/Fonts/msyhbd.ttf"     // 微软雅黑 Bold
+    };
+    
+    for (const QString &path : fontPaths) {
+        if (QFile::exists(path)) {
+            chineseFontPath = path;
+            break;
+        }
+    }
+    
+    auto setupAnnotation = [&chineseFontPath](vtkCornerAnnotation *annot) {
+        if (!annot) return;
+        auto textProp = annot->GetTextProperty();
+        textProp->SetColor(1.0, 1.0, 0.0); // 黄色
+        
+        if (!chineseFontPath.isEmpty()) {
+            // 使用字体文件
+            textProp->SetFontFamily(VTK_FONT_FILE);
+            textProp->SetFontFile(chineseFontPath.toStdString().c_str());
+        } else {
+            // 回退到 Times 字体
+            textProp->SetFontFamilyToTimes();
+        }
+        
+        annot->SetMaximumFontSize(14);
+    };
+    
     if (!m_annotAxial) {
         m_annotAxial = vtkSmartPointer<vtkCornerAnnotation>::New();
-        m_annotAxial->GetTextProperty()->SetColor(1.0, 1.0, 0.0); // 黄色
-        m_annotAxial->SetMaximumFontSize(14);
+        setupAnnotation(m_annotAxial);
         m_viewerAxial->GetRenderer()->AddViewProp(m_annotAxial);
     }
     if (!m_annotSagittal) {
         m_annotSagittal = vtkSmartPointer<vtkCornerAnnotation>::New();
-        m_annotSagittal->GetTextProperty()->SetColor(1.0, 1.0, 0.0);
-        m_annotSagittal->SetMaximumFontSize(14);
+        setupAnnotation(m_annotSagittal);
         m_viewerSagittal->GetRenderer()->AddViewProp(m_annotSagittal);
     }
     if (!m_annotCoronal) {
         m_annotCoronal = vtkSmartPointer<vtkCornerAnnotation>::New();
-        m_annotCoronal->GetTextProperty()->SetColor(1.0, 1.0, 0.0);
-        m_annotCoronal->SetMaximumFontSize(14);
+        setupAnnotation(m_annotCoronal);
         m_viewerCoronal->GetRenderer()->AddViewProp(m_annotCoronal);
     }
 
@@ -292,34 +343,35 @@ void Widget::onOpenDicom()
     disconnect(sliderWindow,   &QSlider::valueChanged, this, nullptr);
     disconnect(sliderLevel,    &QSlider::valueChanged, this, nullptr);
 
-    // 设置轴向滑动条
+    // 设置轴向滑动条（先断开信号，设置值后再连接，避免触发未初始化的回调）
     int axialMin = m_viewerAxial->GetSliceMin();
     int axialMax = m_viewerAxial->GetSliceMax();
     sliderAxial->setRange(axialMin, axialMax);
-    // 设置滑动条默认值为中值（同时用于 3D 平面）
     int axialMid = std::clamp(axialMidIndex, axialMin, axialMax);
     m_viewerAxial->SetSlice(axialMid);
+    disconnect(sliderAxial, &QSlider::valueChanged, this, &Widget::onSliderAxialChanged);
     sliderAxial->setValue(axialMid);
     connect(sliderAxial, &QSlider::valueChanged, this, &Widget::onSliderAxialChanged, Qt::UniqueConnection);
 
-    // 设置矢状位滑动条
+    // 设置矢状位滑动条（先断开信号，设置值后再连接，避免触发未初始化的回调）
     int sagittalMin = m_viewerSagittal->GetSliceMin();
     int sagittalMax = m_viewerSagittal->GetSliceMax();
     sliderSagittal->setRange(sagittalMin, sagittalMax);
-    // 设置滑动条默认值为中值（同时用于 3D 平面）
     int sagittalMid = std::clamp(sagittalMidIndex, sagittalMin, sagittalMax);
     m_viewerSagittal->SetSlice(sagittalMid);
+    disconnect(sliderSagittal, &QSlider::valueChanged, this, &Widget::onSliderSagittalChanged);
     sliderSagittal->setValue(sagittalMid);
     connect(sliderSagittal, &QSlider::valueChanged, this, &Widget::onSliderSagittalChanged, Qt::UniqueConnection);
 
-    // 设置冠状位滑动条
+    // 设置冠状位滑动条（先断开信号，设置值后再连接，避免触发未初始化的回调）
     int coronalMin = m_viewerCoronal->GetSliceMin();
     int coronalMax = m_viewerCoronal->GetSliceMax();
     sliderCoronal->setRange(coronalMin, coronalMax);
-    // 设置滑动条默认值为中值（同时用于 3D 平面）
     int coronalMid = std::clamp(coronalMidIndex, coronalMin, coronalMax);
     m_viewerCoronal->SetSlice(coronalMid);
+    disconnect(sliderCoronal, &QSlider::valueChanged, this, &Widget::onSliderCoronalChanged);
     sliderCoronal->setValue(coronalMid);
+    connect(sliderCoronal, &QSlider::valueChanged, this, &Widget::onSliderCoronalChanged, Qt::UniqueConnection);
 
     // 设置窗宽 / 窗位滑动条的范围和默认值
     sliderWindow->setRange(1, 3000);
@@ -511,7 +563,52 @@ std::string Widget::GetDicomValue(const itk::MetaDataDictionary &dict,
     if (value.empty()) {
         return "N/A";
     }
-    return value;
+    
+    // 清理字符串：移除前导和尾随空白字符
+    std::string cleanedValue = value;
+    size_t firstNonSpace = cleanedValue.find_first_not_of(" \t\n\r");
+    if (firstNonSpace != std::string::npos) {
+        cleanedValue.erase(0, firstNonSpace);
+    }
+    size_t lastNonSpace = cleanedValue.find_last_not_of(" \t\n\r");
+    if (lastNonSpace != std::string::npos) {
+        cleanedValue.erase(lastNonSpace + 1);
+    }
+    
+    if (cleanedValue.empty()) {
+        return "N/A";
+    }
+    
+    // 对于患者姓名（0010|0010），尝试多种编码方式
+    if (tagKey == "0010|0010") {
+        // 尝试使用本地编码（Windows 上通常是 GBK）
+        QString nameFromLocal = QString::fromLocal8Bit(cleanedValue.c_str());
+        if (!nameFromLocal.contains('?') && !nameFromLocal.isEmpty()) {
+            return nameFromLocal.toStdString();
+        }
+        
+        // 尝试使用 GBK 编码
+        QTextCodec *gbkCodec = QTextCodec::codecForName("GBK");
+        if (gbkCodec) {
+            QString nameFromGBK = gbkCodec->toUnicode(cleanedValue.c_str());
+            if (!nameFromGBK.contains('?') && !nameFromGBK.isEmpty()) {
+                return nameFromGBK.toStdString();
+            }
+        }
+        
+        // 尝试使用 GB2312 编码
+        QTextCodec *gb2312Codec = QTextCodec::codecForName("GB2312");
+        if (gb2312Codec) {
+            QString nameFromGB2312 = gb2312Codec->toUnicode(cleanedValue.c_str());
+            if (!nameFromGB2312.contains('?') && !nameFromGB2312.isEmpty()) {
+                return nameFromGB2312.toStdString();
+            }
+        }
+        
+        // 如果都失败，使用原始值
+    }
+    
+    return cleanedValue;
 }
 
 void Widget::onSliderAxialChanged(int value)
@@ -685,23 +782,35 @@ void Widget::UpdateAnnotations()
         if (slice < 1) slice = 1;
         if (slice > totalSlices) slice = totalSlices;
 
+        // 使用 QString 构建所有文本，确保 UTF-8 编码
+        QString patientName = QString::fromStdString(m_patientName);
+        QString patientID = QString::fromStdString(m_patientID);
+        
+        // 如果姓名为空或只有空白字符，显示 "N/A"
+        if (patientName.trimmed().isEmpty() || patientName == "N/A") {
+            patientName = QString::fromUtf8("N/A");
+        }
+
         // 左上角：患者信息 + 方向
-        std::string topLeft = "Name: " + m_patientName +
-                              "\nID: " + m_patientID +
-                              "\nView: " + (orientationLabel ? orientationLabel : "");
-        annot->SetText(0, topLeft.c_str());
+        QString topLeft = QString::fromUtf8("Name: %1\nID: %2\nView: %3")
+                          .arg(patientName)
+                          .arg(patientID)
+                          .arg(orientationLabel ? QString::fromUtf8(orientationLabel) : QString());
+        annot->SetText(0, topLeft.toUtf8().constData());
 
         // 左下角：切片信息
-        std::string bottomLeft = "Slice: " + std::to_string(slice) +
-                                 " / " + std::to_string(totalSlices);
-        annot->SetText(1, bottomLeft.c_str());
+        QString bottomLeft = QString::fromUtf8("Slice: %1 / %2")
+                             .arg(slice)
+                             .arg(totalSlices);
+        annot->SetText(1, bottomLeft.toUtf8().constData());
 
         // 右下角：窗宽 / 窗位
         double w = viewer->GetColorWindow();
         double l = viewer->GetColorLevel();
-        std::string bottomRight = "W: " + std::to_string(static_cast<int>(w)) +
-                                  "  L: " + std::to_string(static_cast<int>(l));
-        annot->SetText(2, bottomRight.c_str());
+        QString bottomRight = QString::fromUtf8("W: %1  L: %2")
+                              .arg(static_cast<int>(w))
+                              .arg(static_cast<int>(l));
+        annot->SetText(2, bottomRight.toUtf8().constData());
     };
 
     updateForViewer(m_viewerAxial,    m_annotAxial,    "Axial");
@@ -819,5 +928,111 @@ void Widget::HandleViewClick(vtkResliceImageViewer *viewer,
     }
     if (auto slider = qobject_cast<QSlider*>(ui->slider_coronal)) {
         slider->setValue(idxY);
+    }
+}
+
+void Widget::onMeasureToggled(bool checked)
+{
+    if (checked) {
+        // 开启测量模式
+        if (!m_viewerAxial || !m_viewerSagittal || !m_viewerCoronal) {
+            QMessageBox::warning(this, QString::fromUtf8("提示"), 
+                                QString::fromUtf8("请先打开 DICOM 图像。"));
+            if (auto btn = ui->btn_measure) {
+                btn->setChecked(false);
+            }
+            return;
+        }
+
+        // 获取图像数据以获取 Spacing
+        vtkImageData *imageData = m_viewerAxial->GetInput();
+        if (!imageData) {
+            QMessageBox::warning(this, QString::fromUtf8("提示"), 
+                                QString::fromUtf8("无法获取图像数据。"));
+            if (auto btn = ui->btn_measure) {
+                btn->setChecked(false);
+            }
+            return;
+        }
+
+        double spacing[3];
+        imageData->GetSpacing(spacing);
+
+        // 初始化轴向视图的测量工具
+        if (!m_distWidgetAxial) {
+            m_distWidgetAxial = vtkSmartPointer<vtkDistanceWidget>::New();
+            auto rep = vtkSmartPointer<vtkDistanceRepresentation2D>::New();
+            m_distWidgetAxial->SetRepresentation(rep);
+            
+            // 设置标签格式（基于 spacing 计算物理距离）
+            rep->SetLabelFormat("%-#6.2f mm");
+            
+            // 注意：VTK 9.2 中 vtkDistanceRepresentation2D 的属性设置方式可能不同
+            // 先使用默认样式，确保功能正常工作
+        }
+        // 安全地设置 Interactor
+        auto axialInteractor = m_viewerAxial->GetRenderWindow() ? 
+                               m_viewerAxial->GetRenderWindow()->GetInteractor() : nullptr;
+        if (axialInteractor) {
+            m_distWidgetAxial->SetInteractor(axialInteractor);
+            m_distWidgetAxial->On();
+        }
+
+        // 初始化矢状位视图的测量工具
+        if (!m_distWidgetSagittal) {
+            m_distWidgetSagittal = vtkSmartPointer<vtkDistanceWidget>::New();
+            auto rep = vtkSmartPointer<vtkDistanceRepresentation2D>::New();
+            m_distWidgetSagittal->SetRepresentation(rep);
+            
+            rep->SetLabelFormat("%-#6.2f mm");
+        }
+        auto sagittalInteractor = m_viewerSagittal->GetRenderWindow() ? 
+                                  m_viewerSagittal->GetRenderWindow()->GetInteractor() : nullptr;
+        if (sagittalInteractor) {
+            m_distWidgetSagittal->SetInteractor(sagittalInteractor);
+            m_distWidgetSagittal->On();
+        }
+
+        // 初始化冠状位视图的测量工具
+        if (!m_distWidgetCoronal) {
+            m_distWidgetCoronal = vtkSmartPointer<vtkDistanceWidget>::New();
+            auto rep = vtkSmartPointer<vtkDistanceRepresentation2D>::New();
+            m_distWidgetCoronal->SetRepresentation(rep);
+            
+            rep->SetLabelFormat("%-#6.2f mm");
+        }
+        auto coronalInteractor = m_viewerCoronal->GetRenderWindow() ? 
+                                 m_viewerCoronal->GetRenderWindow()->GetInteractor() : nullptr;
+        if (coronalInteractor) {
+            m_distWidgetCoronal->SetInteractor(coronalInteractor);
+            m_distWidgetCoronal->On();
+        }
+
+        // 刷新所有窗口
+        m_viewerAxial->Render();
+        m_viewerSagittal->Render();
+        m_viewerCoronal->Render();
+    } else {
+        // 关闭测量模式
+        if (m_distWidgetAxial) {
+            m_distWidgetAxial->Off();
+        }
+        if (m_distWidgetSagittal) {
+            m_distWidgetSagittal->Off();
+        }
+        if (m_distWidgetCoronal) {
+            m_distWidgetCoronal->Off();
+        }
+
+        // 刷新所有窗口
+        if (m_viewerAxial) {
+            m_viewerAxial->Render();
+        }
+        if (m_viewerSagittal) {
+            m_viewerSagittal->Render();
+        }
+        if (m_viewerCoronal) {
+            m_viewerCoronal->Render();
+        }
     }
 }

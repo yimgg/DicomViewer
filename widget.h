@@ -9,6 +9,9 @@
 #include <vtkCallbackCommand.h>
 #include <vtkCornerAnnotation.h>
 #include <vtkCellPicker.h>
+#include <vtkDistanceWidget.h>
+#include <vtkDistanceRepresentation2D.h>
+#include <vtkProperty2D.h>
 
 #include <itkImage.h>
 #include <itkMetaDataObject.h>
@@ -45,6 +48,7 @@ private slots:
     void onSliderSagittalChanged(int value);
     void onSliderCoronalChanged(int value);
     void onWindowLevelChanged();
+    void onMeasureToggled(bool checked);
 
 private:
     using PixelType = short;
@@ -100,6 +104,11 @@ private:
 
     // 3D 视图中的立方体外框
     vtkSmartPointer<vtkActor> m_outlineActor;
+
+    // 距离测量工具
+    vtkSmartPointer<vtkDistanceWidget> m_distWidgetAxial;
+    vtkSmartPointer<vtkDistanceWidget> m_distWidgetSagittal;
+    vtkSmartPointer<vtkDistanceWidget> m_distWidgetCoronal;
 
     vtkSmartPointer<vtkCallbackCommand> m_axialSliceCallback;
     vtkSmartPointer<vtkCallbackCommand> m_sagittalSliceCallback;
