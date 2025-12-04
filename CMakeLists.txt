@@ -29,6 +29,8 @@ find_package(VTK 9.2 REQUIRED COMPONENTS
     RenderingGL2PSOpenGL2
     FiltersModeling
     RenderingAnnotation
+    ImagingCore
+    ImagingGeneral
 )
 if(VTK_FOUND)
     message(STATUS "VTK version: ${VTK_VERSION}")
@@ -88,6 +90,8 @@ target_link_libraries(myDicomViewer PRIVATE
     VTK::RenderingGL2PSOpenGL2
     VTK::FiltersModeling
     VTK::RenderingAnnotation
+    VTK::ImagingCore
+    VTK::ImagingGeneral
     ${ITK_LIBRARIES}
 )
 

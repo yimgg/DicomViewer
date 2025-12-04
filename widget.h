@@ -12,9 +12,15 @@
 #include <vtkDistanceWidget.h>
 #include <vtkDistanceRepresentation2D.h>
 #include <vtkProperty2D.h>
+#include <vtkImageReslice.h>
+#include <vtkImageMapToColors.h>
+#include <vtkImageActor.h>
+#include <vtkExtractVOI.h>
+#include <vtkImagePermute.h>
 
 #include <itkImage.h>
 #include <itkMetaDataObject.h>
+#include <itkImageFileReader.h>
 
 #include <string>
 
@@ -49,6 +55,7 @@ private slots:
     void onSliderCoronalChanged(int value);
     void onWindowLevelChanged();
     void onMeasureToggled(bool checked);
+    void onLoadMask();
 
 private:
     using PixelType = short;
@@ -110,6 +117,22 @@ private:
     vtkSmartPointer<vtkDistanceWidget> m_distWidgetSagittal;
     vtkSmartPointer<vtkDistanceWidget> m_distWidgetCoronal;
 
+    // 掩膜数据
+    vtkSmartPointer<vtkImageData> m_maskData;
+
+    // 掩膜管线结构体（每个视图需要独立管线）
+    struct MaskPipeline {
+        vtkSmartPointer<vtkImageReslice> reslice;
+        vtkSmartPointer<vtkExtractVOI> extractVOI;
+        vtkSmartPointer<vtkImagePermute> permute;
+        vtkSmartPointer<vtkImageMapToColors> colorMap;
+        vtkSmartPointer<vtkImageActor> actor;
+    };
+
+    MaskPipeline m_maskAxial;
+    MaskPipeline m_maskSagittal;
+    MaskPipeline m_maskCoronal;
+
     vtkSmartPointer<vtkCallbackCommand> m_axialSliceCallback;
     vtkSmartPointer<vtkCallbackCommand> m_sagittalSliceCallback;
     vtkSmartPointer<vtkCallbackCommand> m_coronalSliceCallback;
@@ -129,6 +152,11 @@ private:
     std::string m_patientID;
 
     void UpdateAnnotations();
+    void UpdateMaskSlice(vtkResliceImageViewer *viewer,
+                        MaskPipeline &maskPipe,
+                        const char *viewName);
+    void SetupMaskPipeline();
+    
     static void OnClickCallback(vtkObject* caller,
                                 unsigned long eventId,
                                 void* clientData,
